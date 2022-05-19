@@ -7,9 +7,16 @@ mod result;
 pub use result::{Error, Result, TransactionError};
 pub use {bincode, sled};
 
+#[cfg(not(feature = "serde"))]
 pub trait Entry {
     type Key<'a>: bincode::BorrowDecode<'a> + bincode::Encode;
     type Val<'a>: bincode::BorrowDecode<'a> + bincode::Encode;
+}
+
+#[cfg(feature = "serde")]
+pub trait Entry {
+    type Key<'a>: serde::Deserialize<'a> + serde::Serialize;
+    type Val<'a>: serde::Deserialize<'a> + serde::Serialize;
 }
 
 pub struct Tree<A> {
@@ -148,6 +155,18 @@ impl<E: Entry> Value<E> {
     }
 }
 
+#[cfg(feature = "serde")]
+impl<E: Entry> serde::Serialize for Value<E>
+where
+    E: Entry,
+    for<'a> E::Val<'a>: serde::Serialize,
+{
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let val = self.value().map_err(serde::ser::Error::custom)?;
+        val.serialize(serializer)
+    }
+}
+
 pub struct KeyValue<E> {
     raw_key: sled::IVec,
     raw_value: sled::IVec,
@@ -162,6 +181,11 @@ impl<E> KeyValue<E> {
             raw_value,
             phantom: PhantomData,
         }
+    }
+
+    #[inline]
+    pub fn into_value(self) -> Value<E> {
+        Value::new(self.raw_value)
     }
 }
 
@@ -297,6 +321,7 @@ impl<A> DoubleEndedIterator for Iter<A> {
     }
 }
 
+#[cfg(not(feature = "serde"))]
 #[inline]
 fn decode<'a, A: bincode::BorrowDecode<'a>>(buf: &'a [u8]) -> Result<A> {
     let (val, _) =
@@ -304,7 +329,20 @@ fn decode<'a, A: bincode::BorrowDecode<'a>>(buf: &'a [u8]) -> Result<A> {
     Ok(val)
 }
 
+#[cfg(not(feature = "serde"))]
 #[inline]
 fn encode<A: bincode::Encode>(val: A) -> Result<Vec<u8>> {
     bincode::encode_to_vec(val, bincode::config::standard()).map_err(Error::EncodeError)
+}
+
+#[cfg(feature = "serde")]
+#[inline]
+fn decode<'a, A: serde::Deserialize<'a>>(buf: &'a [u8]) -> Result<A> {
+    bincode::serde::decode_borrowed_from_slice(buf, bincode::config::standard()).map_err(Error::DecodeError)
+}
+
+#[cfg(feature = "serde")]
+#[inline]
+fn encode<A: serde::Serialize>(val: A) -> Result<Vec<u8>> {
+    bincode::serde::encode_to_vec(val, bincode::config::standard()).map_err(Error::EncodeError)
 }

@@ -13,6 +13,9 @@ name = "bincode"
 version = "2.0.0-rc.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f609ceb2c41b0d0277314a789ef0e7eb14593d5485f7c67320bed3924ebb1b33"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "bitflags"
@@ -192,6 +195,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d29ab0c6d3fc0ee92fe66e2d99f700eab17a8d57d1c1d3b748380fb20baa78cd"
 
 [[package]]
+name = "serde"
+version = "1.0.137"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "61ea8d54c77f8315140a05f4c7237403bf38b72704d031543aa1d16abbf517d1"
+
+[[package]]
 name = "sled"
 version = "0.34.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -212,6 +221,7 @@ name = "sled-bincode"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "serde",
  "sled",
  "thiserror",
 ]
