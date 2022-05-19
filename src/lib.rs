@@ -1,23 +1,25 @@
-#![feature(generic_associated_types)]
-
 use std::marker::PhantomData;
 use std::ops::RangeBounds;
 
 mod result;
-pub use result::{Error, Result, TransactionError};
-pub use {bincode, sled};
+pub use result::{Error, Result};
+pub use sled::transaction::{ConflictableTransactionError, TransactionError};
+pub use sled::{open, Db, Error as SledError};
 
 #[cfg(not(feature = "serde"))]
-pub trait Entry {
-    type Key<'a>: bincode::BorrowDecode<'a> + bincode::Encode;
-    type Val<'a>: bincode::BorrowDecode<'a> + bincode::Encode;
+pub trait Entry<'a> {
+    type Key: bincode::BorrowDecode<'a> + bincode::Encode;
+    type Val: bincode::BorrowDecode<'a> + bincode::Encode;
 }
 
 #[cfg(feature = "serde")]
-pub trait Entry {
-    type Key<'a>: serde::Deserialize<'a> + serde::Serialize;
-    type Val<'a>: serde::Deserialize<'a> + serde::Serialize;
+pub trait Entry<'a> {
+    type Key: serde::Deserialize<'a> + serde::Serialize;
+    type Val: serde::Deserialize<'a> + serde::Serialize;
 }
+
+type KeyOf<'a, A> = <A as Entry<'a>>::Key;
+type ValOf<'a, A> = <A as Entry<'a>>::Val;
 
 pub struct Tree<A> {
     raw: sled::Tree,
@@ -82,33 +84,33 @@ impl<A> Tree<A> {
     }
 }
 
-impl<A: Entry> Tree<A> {
+impl<A: for<'a> Entry<'a>> Tree<A> {
     #[inline]
-    pub fn insert(&self, key: &A::Key<'_>, value: &A::Val<'_>) -> Result<Option<Value<A>>> {
+    pub fn insert(&self, key: &KeyOf<A>, value: &ValOf<A>) -> Result<Option<Value<A>>> {
         let key = encode(key)?;
         let val = encode(value)?;
         Ok(self.raw.insert(key, val)?.map(Value::new))
     }
 
     #[inline]
-    pub fn get(&self, key: &A::Key<'_>) -> Result<Option<Value<A>>> {
+    pub fn get(&self, key: &KeyOf<A>) -> Result<Option<Value<A>>> {
         Ok(self.raw.get(encode(key)?)?.map(Value::new))
     }
 
     #[inline]
-    pub fn remove(&self, key: &A::Key<'_>) -> Result<Option<Value<A>>> {
+    pub fn remove(&self, key: &KeyOf<A>) -> Result<Option<Value<A>>> {
         Ok(self.raw.remove(encode(key)?)?.map(Value::new))
     }
 
     #[inline]
-    pub fn range<'a, R: RangeBounds<A::Key<'a>>>(&self, range: R) -> Result<Iter<A>> {
+    pub fn range<'a, R: RangeBounds<KeyOf<'a, A>>>(&self, range: R) -> Result<Iter<A>> {
         let start = encode(range.start_bound())?;
         let end = encode(range.end_bound())?;
         Ok(Iter::new(self.raw.range(start..end)))
     }
 
     #[inline]
-    pub fn scan_prefix(&self, prefix: &A::Key<'_>) -> Result<Iter<A>> {
+    pub fn scan_prefix(&self, prefix: &KeyOf<A>) -> Result<Iter<A>> {
         Ok(Iter::new(self.raw.scan_prefix(encode(prefix)?)))
     }
 }
@@ -119,26 +121,26 @@ pub struct Batch<A> {
     phantom: PhantomData<A>,
 }
 
-impl<A: Entry> Batch<A> {
+impl<A: for<'a> Entry<'a>> Batch<A> {
     #[inline]
-    pub fn insert(&mut self, key: &A::Key<'_>, val: &A::Val<'_>) -> Result<()> {
+    pub fn insert(&mut self, key: &KeyOf<A>, val: &ValOf<A>) -> Result<()> {
         self.raw.insert(encode(key)?, encode(val)?);
         Ok(())
     }
 
     #[inline]
-    pub fn remove(&mut self, key: &A::Key<'_>) -> Result<()> {
+    pub fn remove(&mut self, key: &KeyOf<A>) -> Result<()> {
         self.raw.remove(encode(key)?);
         Ok(())
     }
 }
 
-pub struct Value<E> {
+pub struct Value<A> {
     raw: sled::IVec,
-    phantom: PhantomData<E>,
+    phantom: PhantomData<A>,
 }
 
-impl<E> Value<E> {
+impl<A> Value<A> {
     #[inline]
     fn new(raw: sled::IVec) -> Self {
         Self {
@@ -148,18 +150,29 @@ impl<E> Value<E> {
     }
 }
 
-impl<E: Entry> Value<E> {
+impl<A: for<'a> Entry<'a>> Value<A> {
     #[inline]
-    pub fn value(&self) -> Result<E::Val<'_>> {
+    pub fn value(&self) -> Result<ValOf<A>> {
         decode(&self.raw)
     }
 }
 
-#[cfg(feature = "serde")]
-impl<E: Entry> serde::Serialize for Value<E>
+impl<A> bincode::Encode for Value<A>
 where
-    E: Entry,
-    for<'a> E::Val<'a>: serde::Serialize,
+    A: for<'a> Entry<'a>,
+{
+    fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), bincode::error::EncodeError> {
+        self.value()
+            .map_err(|err| bincode::error::EncodeError::OtherString(err.to_string()))?
+            .encode(encoder)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<A> serde::Serialize for Value<A>
+where
+    A: for<'a> Entry<'a>,
+    for<'a> ValOf<'a, A>: serde::Serialize,
 {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let val = self.value().map_err(serde::ser::Error::custom)?;
@@ -167,12 +180,12 @@ where
     }
 }
 
-pub struct Key<E> {
+pub struct Key<A> {
     raw: sled::IVec,
-    phantom: PhantomData<E>,
+    phantom: PhantomData<A>,
 }
 
-impl<E> Key<E> {
+impl<A> Key<A> {
     #[inline]
     fn new(raw: sled::IVec) -> Self {
         Self {
@@ -182,18 +195,29 @@ impl<E> Key<E> {
     }
 }
 
-impl<E: Entry> Key<E> {
+impl<A: for<'a> Entry<'a>> Key<A> {
     #[inline]
-    pub fn key(&self) -> Result<E::Key<'_>> {
+    pub fn key(&self) -> Result<KeyOf<A>> {
         decode(&self.raw)
     }
 }
 
-#[cfg(feature = "serde")]
-impl<E: Entry> serde::Serialize for Key<E>
+impl<A> bincode::Encode for Key<A>
 where
-    E: Entry,
-    for<'a> E::Key<'a>: serde::Serialize,
+    A: for<'a> Entry<'a>,
+{
+    fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), bincode::error::EncodeError> {
+        self.key()
+            .map_err(|err| bincode::error::EncodeError::OtherString(err.to_string()))?
+            .encode(encoder)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<A> serde::Serialize for Key<A>
+where
+    A: for<'a> Entry<'a>,
+    for<'a> KeyOf<'a, A>: serde::Serialize,
 {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let val = self.key().map_err(serde::ser::Error::custom)?;
@@ -201,13 +225,13 @@ where
     }
 }
 
-pub struct KeyValue<E> {
+pub struct KeyValue<A> {
     raw_key: sled::IVec,
     raw_value: sled::IVec,
-    phantom: PhantomData<E>,
+    phantom: PhantomData<A>,
 }
 
-impl<E> KeyValue<E> {
+impl<A> KeyValue<A> {
     #[inline]
     fn new(raw_key: sled::IVec, raw_value: sled::IVec) -> Self {
         Self {
@@ -218,29 +242,29 @@ impl<E> KeyValue<E> {
     }
 
     #[inline]
-    pub fn into_key(self) -> Key<E> {
+    pub fn into_key(self) -> Key<A> {
         Key::new(self.raw_value)
     }
 
     #[inline]
-    pub fn into_value(self) -> Value<E> {
+    pub fn into_value(self) -> Value<A> {
         Value::new(self.raw_value)
     }
 }
 
-impl<E: Entry> KeyValue<E> {
+impl<A: for<'a> Entry<'a>> KeyValue<A> {
     #[inline]
-    pub fn key(&self) -> Result<E::Key<'_>> {
+    pub fn key(&self) -> Result<KeyOf<A>> {
         decode(&self.raw_key)
     }
 
     #[inline]
-    pub fn value(&self) -> Result<E::Val<'_>> {
+    pub fn value(&self) -> Result<ValOf<A>> {
         decode(&self.raw_value)
     }
 }
 
-type TransactionResult<A> = Result<A, sled::transaction::UnabortableTransactionError>;
+type TransactionalResult<A> = Result<A, sled::transaction::UnabortableTransactionError>;
 
 pub struct TransactionalTree<'a, A> {
     raw: &'a sled::transaction::TransactionalTree,
@@ -257,7 +281,7 @@ impl<'a, A> TransactionalTree<'a, A> {
     }
 
     #[inline]
-    pub fn apply_batch(&self, batch: &Batch<A>) -> TransactionResult<()> {
+    pub fn apply_batch(&self, batch: &Batch<A>) -> TransactionalResult<()> {
         self.raw.apply_batch(&batch.raw)
     }
 
@@ -272,19 +296,19 @@ impl<'a, A> TransactionalTree<'a, A> {
     }
 }
 
-impl<'a, A: Entry> TransactionalTree<'a, A> {
-    pub fn insert(&self, key: &A::Key<'_>, val: &A::Val<'_>) -> TransactionResult<Option<Value<A>>> {
+impl<'a, A: for<'v> Entry<'v>> TransactionalTree<'a, A> {
+    pub fn insert(&self, key: &KeyOf<A>, val: &ValOf<A>) -> TransactionalResult<Option<Value<A>>> {
         let key = encode(key).expect("key encoding failed");
         let val = encode(val).expect("value encoding failed");
         Ok(self.raw.insert(key, val)?.map(Value::new))
     }
 
-    pub fn remove(&self, key: &A::Key<'_>) -> TransactionResult<Option<Value<A>>> {
+    pub fn remove(&self, key: &KeyOf<A>) -> TransactionalResult<Option<Value<A>>> {
         let key = encode(key).expect("key encoding failed");
         Ok(self.raw.remove(key)?.map(Value::new))
     }
 
-    pub fn get(&self, key: &A::Key<'_>) -> TransactionResult<Option<Value<A>>> {
+    pub fn get(&self, key: &KeyOf<A>) -> TransactionalResult<Option<Value<A>>> {
         let key = encode(key).expect("key encoding failed");
         Ok(self.raw.get(key)?.map(Value::new))
     }
