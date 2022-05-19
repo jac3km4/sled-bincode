@@ -167,6 +167,40 @@ where
     }
 }
 
+pub struct Key<E> {
+    raw: sled::IVec,
+    phantom: PhantomData<E>,
+}
+
+impl<E> Key<E> {
+    #[inline]
+    fn new(raw: sled::IVec) -> Self {
+        Self {
+            raw,
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl<E: Entry> Key<E> {
+    #[inline]
+    pub fn key(&self) -> Result<E::Key<'_>> {
+        decode(&self.raw)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<E: Entry> serde::Serialize for Key<E>
+where
+    E: Entry,
+    for<'a> E::Key<'a>: serde::Serialize,
+{
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let val = self.key().map_err(serde::ser::Error::custom)?;
+        val.serialize(serializer)
+    }
+}
+
 pub struct KeyValue<E> {
     raw_key: sled::IVec,
     raw_value: sled::IVec,
@@ -181,6 +215,11 @@ impl<E> KeyValue<E> {
             raw_value,
             phantom: PhantomData,
         }
+    }
+
+    #[inline]
+    pub fn into_key(self) -> Key<E> {
+        Key::new(self.raw_value)
     }
 
     #[inline]
@@ -288,6 +327,14 @@ impl<A> Iter<A> {
             raw,
             phantom: PhantomData,
         }
+    }
+
+    #[inline]
+    pub fn keys(self) -> impl DoubleEndedIterator<Item = Result<Key<A>>> {
+        self.raw.map(|r| {
+            let (k, _) = r?;
+            Ok(Key::new(k))
+        })
     }
 
     #[inline]
