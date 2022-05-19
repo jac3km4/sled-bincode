@@ -228,18 +228,18 @@ impl<'a, A: Entry> TransactionalTree<'a, A> {
 }
 
 pub trait Transactional<F, R, E> {
-    fn transaction(&self, fun: F) -> sled::transaction::TransactionResult<R, E>;
+    fn transaction(self, fun: F) -> sled::transaction::TransactionResult<R, E>;
 }
 
 macro_rules! impl_transactable {
     ($($ty:ident),*) => {
         #[allow(non_snake_case)]
-        impl<$($ty,)* F, R, E> Transactional<F, R, E> for ($(Tree<$ty>),*)
+        impl<$($ty,)* F, R, E> Transactional<F, R, E> for ($(&Tree<$ty>),*)
         where
             F: Fn($(TransactionalTree<$ty>),*) -> sled::transaction::ConflictableTransactionResult<R, E>,
         {
             #[inline]
-            fn transaction(&self, fun: F) -> sled::transaction::TransactionResult<R, E> {
+            fn transaction(self, fun: F) -> sled::transaction::TransactionResult<R, E> {
                 use sled::Transactional;
                 let ($($ty,)*) = self;
                 ($(&$ty.raw),*).transaction(|($($ty),*)| fun($(TransactionalTree::new($ty)),*))
