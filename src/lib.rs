@@ -5,6 +5,7 @@ use std::ops::RangeBounds;
 
 mod result;
 pub use result::{Error, Result, TransactionError};
+pub use {bincode, sled};
 
 pub trait Entry {
     type Key<'a>: bincode::BorrowDecode<'a> + bincode::Encode;
