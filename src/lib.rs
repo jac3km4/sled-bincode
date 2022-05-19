@@ -160,6 +160,7 @@ impl<A: for<'a> Entry<'a>> Value<A> {
 impl<A> bincode::Encode for Value<A>
 where
     A: for<'a> Entry<'a>,
+    for<'a> ValOf<'a, A>: bincode::Encode,
 {
     fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), bincode::error::EncodeError> {
         self.value()
@@ -205,6 +206,7 @@ impl<A: for<'a> Entry<'a>> Key<A> {
 impl<A> bincode::Encode for Key<A>
 where
     A: for<'a> Entry<'a>,
+    for<'a> KeyOf<'a, A>: bincode::Encode,
 {
     fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), bincode::error::EncodeError> {
         self.key()
