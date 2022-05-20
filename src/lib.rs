@@ -10,19 +10,19 @@ pub use sled::transaction::{ConflictableTransactionError, TransactionError};
 pub use sled::{open, Db, Error as SledError};
 
 #[cfg(not(feature = "serde"))]
-pub trait Entry<'a> {
+pub trait TreeEntry<'a> {
     type Key: bincode::BorrowDecode<'a> + bincode::Encode;
     type Val: bincode::BorrowDecode<'a> + bincode::Encode;
 }
 
 #[cfg(feature = "serde")]
-pub trait Entry<'a> {
+pub trait TreeEntry<'a> {
     type Key: serde::Deserialize<'a> + serde::Serialize;
     type Val: serde::Deserialize<'a> + serde::Serialize;
 }
 
-type KeyOf<'a, A> = <A as Entry<'a>>::Key;
-type ValOf<'a, A> = <A as Entry<'a>>::Val;
+type KeyOf<'a, A> = <A as TreeEntry<'a>>::Key;
+type ValOf<'a, A> = <A as TreeEntry<'a>>::Val;
 
 pub struct Tree<A> {
     raw: sled::Tree,
@@ -87,7 +87,7 @@ impl<A> Tree<A> {
     }
 }
 
-impl<A: for<'a> Entry<'a>> Tree<A> {
+impl<A: for<'a> TreeEntry<'a>> Tree<A> {
     #[inline]
     pub fn insert(&self, key: &KeyOf<A>, value: &ValOf<A>) -> Result<Option<Value<A>>> {
         let key = encode(key)?;
@@ -124,7 +124,7 @@ pub struct Batch<A> {
     phantom: PhantomData<A>,
 }
 
-impl<A: for<'a> Entry<'a>> Batch<A> {
+impl<A: for<'a> TreeEntry<'a>> Batch<A> {
     #[inline]
     pub fn insert(&mut self, key: &KeyOf<A>, val: &ValOf<A>) -> Result<()> {
         self.raw.insert(encode(key)?, encode(val)?.as_ref());
@@ -153,7 +153,7 @@ impl<A> Value<A> {
     }
 }
 
-impl<A: for<'a> Entry<'a>> Value<A> {
+impl<A: for<'a> TreeEntry<'a>> Value<A> {
     #[inline]
     pub fn value(&self) -> Result<ValOf<A>> {
         decode(&self.raw)
@@ -163,7 +163,7 @@ impl<A: for<'a> Entry<'a>> Value<A> {
 #[cfg(feature = "serde")]
 impl<A> serde::Serialize for Value<A>
 where
-    A: for<'a> Entry<'a>,
+    A: for<'a> TreeEntry<'a>,
     for<'a> ValOf<'a, A>: serde::Serialize,
 {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -187,7 +187,7 @@ impl<A> Key<A> {
     }
 }
 
-impl<A: for<'a> Entry<'a>> Key<A> {
+impl<A: for<'a> TreeEntry<'a>> Key<A> {
     #[inline]
     pub fn key(&self) -> Result<KeyOf<A>> {
         decode(&self.raw)
@@ -197,7 +197,7 @@ impl<A: for<'a> Entry<'a>> Key<A> {
 #[cfg(feature = "serde")]
 impl<A> serde::Serialize for Key<A>
 where
-    A: for<'a> Entry<'a>,
+    A: for<'a> TreeEntry<'a>,
     for<'a> KeyOf<'a, A>: serde::Serialize,
 {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -233,7 +233,7 @@ impl<A> KeyValue<A> {
     }
 }
 
-impl<A: for<'a> Entry<'a>> KeyValue<A> {
+impl<A: for<'a> TreeEntry<'a>> KeyValue<A> {
     #[inline]
     pub fn key(&self) -> Result<KeyOf<A>> {
         decode(&self.raw_key)
@@ -277,7 +277,7 @@ impl<'a, A> TransactionalTree<'a, A> {
     }
 }
 
-impl<'a, A: for<'v> Entry<'v>> TransactionalTree<'a, A> {
+impl<'a, A: for<'v> TreeEntry<'v>> TransactionalTree<'a, A> {
     pub fn insert(&self, key: &KeyOf<A>, val: &ValOf<A>) -> TransactionalResult<Option<Value<A>>> {
         let key = encode(key).expect("key encoding failed");
         let val = encode(val).expect("value encoding failed");
