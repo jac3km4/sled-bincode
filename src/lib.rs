@@ -1,6 +1,9 @@
 use std::marker::PhantomData;
 use std::ops::RangeBounds;
 
+use sled::IVec;
+use smallvec::SmallVec;
+
 mod result;
 pub use result::{Error, Result};
 pub use sled::transaction::{ConflictableTransactionError, TransactionError};
@@ -124,7 +127,7 @@ pub struct Batch<A> {
 impl<A: for<'a> Entry<'a>> Batch<A> {
     #[inline]
     pub fn insert(&mut self, key: &KeyOf<A>, val: &ValOf<A>) -> Result<()> {
-        self.raw.insert(encode(key)?, encode(val)?);
+        self.raw.insert(encode(key)?, encode(val)?.as_ref());
         Ok(())
     }
 
@@ -154,18 +157,6 @@ impl<A: for<'a> Entry<'a>> Value<A> {
     #[inline]
     pub fn value(&self) -> Result<ValOf<A>> {
         decode(&self.raw)
-    }
-}
-
-impl<A> bincode::Encode for Value<A>
-where
-    A: for<'a> Entry<'a>,
-    for<'a> ValOf<'a, A>: bincode::Encode,
-{
-    fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), bincode::error::EncodeError> {
-        self.value()
-            .map_err(|err| bincode::error::EncodeError::OtherString(err.to_string()))?
-            .encode(encoder)
     }
 }
 
@@ -200,18 +191,6 @@ impl<A: for<'a> Entry<'a>> Key<A> {
     #[inline]
     pub fn key(&self) -> Result<KeyOf<A>> {
         decode(&self.raw)
-    }
-}
-
-impl<A> bincode::Encode for Key<A>
-where
-    A: for<'a> Entry<'a>,
-    for<'a> KeyOf<'a, A>: bincode::Encode,
-{
-    fn encode<E: bincode::enc::Encoder>(&self, encoder: &mut E) -> Result<(), bincode::error::EncodeError> {
-        self.key()
-            .map_err(|err| bincode::error::EncodeError::OtherString(err.to_string()))?
-            .encode(encoder)
     }
 }
 
@@ -323,12 +302,12 @@ pub trait Transactional<F, R, E> {
 macro_rules! impl_transactable {
     ($($ty:ident),*) => {
         #[allow(non_snake_case)]
-        impl<$($ty,)* F, R, E> Transactional<F, R, E> for ($(&Tree<$ty>),*)
+        impl<$($ty,)* Fun, Res, Err> Transactional<Fun, Res, Err> for ($(&Tree<$ty>),*)
         where
-            F: Fn($(TransactionalTree<$ty>),*) -> sled::transaction::ConflictableTransactionResult<R, E>,
+            Fun: Fn($(TransactionalTree<$ty>),*) -> sled::transaction::ConflictableTransactionResult<Res, Err>,
         {
             #[inline]
-            fn transaction(self, fun: F) -> sled::transaction::TransactionResult<R, E> {
+            fn transaction(self, fun: Fun) -> sled::transaction::TransactionResult<Res, Err> {
                 use sled::Transactional;
                 let ($($ty,)*) = self;
                 ($(&$ty.raw),*).transaction(|($($ty),*)| fun($(TransactionalTree::new($ty)),*))
@@ -340,6 +319,9 @@ macro_rules! impl_transactable {
 impl_transactable!(A, B);
 impl_transactable!(A, B, C);
 impl_transactable!(A, B, C, D);
+impl_transactable!(A, B, C, D, E);
+impl_transactable!(A, B, C, D, E, F);
+impl_transactable!(A, B, C, D, E, F, G);
 
 pub struct Iter<A> {
     raw: sled::Iter,
@@ -394,6 +376,26 @@ impl<A> DoubleEndedIterator for Iter<A> {
     }
 }
 
+#[derive(Debug, Default)]
+struct Buffer(SmallVec<[u8; 8]>);
+
+impl From<Buffer> for IVec {
+    fn from(Buffer(vec): Buffer) -> Self {
+        if vec.spilled() {
+            IVec::from(vec.into_vec())
+        } else {
+            IVec::from(vec.as_ref())
+        }
+    }
+}
+
+impl AsRef<[u8]> for Buffer {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
 #[cfg(not(feature = "serde"))]
 #[inline]
 fn decode<'a, A: bincode::BorrowDecode<'a>>(buf: &'a [u8]) -> Result<A> {
@@ -404,8 +406,11 @@ fn decode<'a, A: bincode::BorrowDecode<'a>>(buf: &'a [u8]) -> Result<A> {
 
 #[cfg(not(feature = "serde"))]
 #[inline]
-fn encode<A: bincode::Encode>(val: A) -> Result<Vec<u8>> {
-    bincode::encode_to_vec(val, bincode::config::standard()).map_err(Error::EncodeError)
+fn encode<A: bincode::Encode>(val: A) -> Result<Buffer> {
+    let mut vec = SmallVec::new();
+    bincode::encode_into_std_write(val, &mut vec, bincode::config::standard())
+        .map_err(Error::EncodeError)?;
+    Ok(Buffer(vec))
 }
 
 #[cfg(feature = "serde")]
@@ -416,6 +421,9 @@ fn decode<'a, A: serde::Deserialize<'a>>(buf: &'a [u8]) -> Result<A> {
 
 #[cfg(feature = "serde")]
 #[inline]
-fn encode<A: serde::Serialize>(val: A) -> Result<Vec<u8>> {
-    bincode::serde::encode_to_vec(val, bincode::config::standard()).map_err(Error::EncodeError)
+fn encode<A: serde::Serialize>(val: A) -> Result<Buffer> {
+    let mut vec = SmallVec::new();
+    bincode::serde::encode_into_std_write(val, &mut vec, bincode::config::standard())
+        .map_err(Error::EncodeError)?;
+    Ok(Buffer(vec))
 }
