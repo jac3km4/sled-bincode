@@ -377,7 +377,7 @@ impl<A> DoubleEndedIterator for Iter<A> {
 }
 
 #[derive(Debug, Default)]
-struct Buffer(SmallVec<[u8; 8]>);
+struct Buffer(SmallVec<[u8; 16]>);
 
 impl From<Buffer> for IVec {
     fn from(Buffer(vec): Buffer) -> Self {
